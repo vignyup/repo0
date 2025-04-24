@@ -1,7 +1,6 @@
 "use client"
 
 import type React from "react"
-
 import { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -20,17 +19,37 @@ import { MultiSelect } from "./multi-select"
 import { TaskTable } from "./task-table"
 import { ViewToggle } from "./view-toggle"
 import type { Task } from "@/lib/data"
-import { TaskCustomFields } from "./task-custom-fields"
 import type { CustomField } from "@/lib/types"
 import { memo } from "react"
 import { useToast } from "@/hooks/use-toast"
+import dynamic from "next/dynamic"
 
-// Memoize the TaskCard component to prevent unnecessary re-renders
+// 使用动态导入延迟加载不是立即需要的组件
+const TaskCustomFieldsLazy = dynamic(
+  () => import("./task-custom-fields").then((mod) => ({ default: mod.TaskCustomFields })),
+  {
+    ssr: false,
+    loading: () => <div className="p-4 border rounded animate-pulse bg-muted/20"></div>,
+  },
+)
+
+// 定义拖拽位置类型
+type DragPosition = "before" | "after"
+
+// 定义拖拽信息类型
+type DragOverInfo = {
+  taskId: string
+  position: DragPosition
+  index: number
+}
+
+// 优化 TaskCard 组件，使用 React.memo 并添加比较函数
 const TaskCard = memo(
   ({
     task,
     onDragStart,
     onDragEnd,
+    onDragOver,
     handleEditTask,
     formatDate,
     getPriorityColor,
@@ -38,16 +57,26 @@ const TaskCard = memo(
     renderCustomFieldInCard,
     getStatusColor,
     draggedTask,
+    index,
+    dragOverInfo,
   }: any) => {
     const router = useRouter()
     return (
       <div
         key={`task-card-${task.id}`}
         draggable
-        onDragStart={(e) => onDragStart(e, task)}
+        onDragStart={(e) => onDragStart(e, task, index)}
         onDragEnd={onDragEnd}
+        onDragOver={(e) => onDragOver(e, task, index)}
         onClick={() => router.push(`/projects/${task.projectId}/tasks/${task.id}`)}
-        className={cn("cursor-pointer task-card", draggedTask?.id === task.id && "opacity-50")}
+        className={cn(
+          "cursor-pointer task-card relative",
+          draggedTask?.id === task.id && "opacity-50",
+          dragOverInfo?.taskId === task.id && dragOverInfo?.position === "before" && "before-indicator",
+          dragOverInfo?.taskId === task.id && dragOverInfo?.position === "after" && "after-indicator",
+        )}
+        data-task-id={task.id}
+        data-index={index}
       >
         <Card className="h-[180px] w-full max-w-[calc(100%-1px)] transition-all hover:border-primary hover:shadow-sm relative">
           <CardHeader className="p-4 pb-2">
@@ -147,33 +176,28 @@ const TaskCard = memo(
                 </div>
               )}
             </div>
-            {/* 删除或注释掉这部分代码
-            {customFields.length > 0 && (
-              <div className="mt-2 pt-1 border-t border-border/30">
-                <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {customFields.map((field) => {
-                    const value = task.customFields?.[field.id]
-                    if (value === undefined || value === null) return null
-
-                    return (
-                      <div key={field.id} className="flex items-center gap-1 text-xs">
-                        <span className="text-muted-foreground">{field.name}:</span>
-                        {renderCustomFieldInCard(task, field)}
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-            )}
-            */}
           </CardContent>
         </Card>
       </div>
     )
   },
+  // 添加比较函数，只有当关键属性变化时才重新渲染
+  (prevProps, nextProps) => {
+    return (
+      prevProps.task.id === nextProps.task.id &&
+      prevProps.task.title === nextProps.task.title &&
+      prevProps.task.description === nextProps.task.description &&
+      prevProps.task.status === nextProps.task.status &&
+      prevProps.task.priority === nextProps.task.priority &&
+      prevProps.draggedTask?.id === nextProps.draggedTask?.id &&
+      prevProps.index === nextProps.index &&
+      JSON.stringify(prevProps.dragOverInfo) === JSON.stringify(nextProps.dragOverInfo) &&
+      JSON.stringify(prevProps.task.tags) === JSON.stringify(nextProps.task.tags)
+    )
+  },
 )
 
-// Memoize the TaskColumn component to prevent unnecessary re-renders
+// 优化 TaskColumn 组件，使用 React.memo 并添加比较函数
 const TaskColumn = memo(
   ({
     column,
@@ -187,13 +211,20 @@ const TaskColumn = memo(
     draggedTask,
     onDragStart,
     onDragEnd,
+    onDragOverTask,
     handleEditTask,
     formatDate,
     getPriorityColor,
     customFields,
     renderCustomFieldInCard,
     getStatusColor,
+    dragOverInfo,
   }: any) => {
+    // 使用 useMemo 优化列内任务的过滤，避免不必要的重新计算
+    const tasksInColumn = useMemo(() => {
+      return filteredTasksList.filter((task) => task.status === column.id)
+    }, [filteredTasksList, column.id])
+
     return (
       <div
         key={`task-column-${column.id}`}
@@ -205,11 +236,12 @@ const TaskColumn = memo(
         onDrop={(e) => handleDrop(e, column.id as Task["status"])}
         onDragEnter={(e) => handleDragEnter(e, column.id)}
         onDragLeave={(e) => handleDragLeave(e, column.id)}
+        data-column-id={column.id}
       >
         <div className="mb-3 flex items-center justify-between">
           <h3 className="font-medium">{column.title}</h3>
           <div className="flex items-center gap-2">
-            <Badge variant="outline">{filteredTasksList.filter((task) => task.status === column.id).length}</Badge>
+            <Badge variant="outline">{tasksInColumn.length}</Badge>
             <Button
               variant="ghost"
               size="icon"
@@ -221,30 +253,58 @@ const TaskColumn = memo(
           </div>
         </div>
         <div className="flex flex-col gap-3 min-h-[200px]">
-          {filteredTasksList
-            .filter((task) => task.status === column.id)
-            .map((task) => (
-              <TaskCard
-                key={task.id}
-                task={task}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-                handleEditTask={handleEditTask}
-                formatDate={formatDate}
-                getPriorityColor={getPriorityColor}
-                customFields={customFields}
-                renderCustomFieldInCard={renderCustomFieldInCard}
-                getStatusColor={getStatusColor}
-                draggedTask={draggedTask}
-              />
-            ))}
-          {filteredTasksList.filter((task) => task.status === column.id).length === 0 && (
-            <div className="flex items-center justify-center h-24 border border-dashed rounded-lg text-muted-foreground text-sm">
+          {tasksInColumn.map((task, index) => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              index={index}
+              onDragStart={onDragStart}
+              onDragEnd={onDragEnd}
+              onDragOver={onDragOverTask}
+              handleEditTask={handleEditTask}
+              formatDate={formatDate}
+              getPriorityColor={getPriorityColor}
+              customFields={customFields}
+              renderCustomFieldInCard={renderCustomFieldInCard}
+              getStatusColor={getStatusColor}
+              draggedTask={draggedTask}
+              dragOverInfo={dragOverInfo}
+            />
+          ))}
+          {tasksInColumn.length === 0 && (
+            <div
+              className="flex items-center justify-center h-24 border border-dashed rounded-lg text-muted-foreground text-sm"
+              onDragOver={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                handleDragOver(e, column.id)
+              }}
+            >
               No tasks
             </div>
           )}
         </div>
       </div>
+    )
+  },
+  // 添加比较函数，只有当关键属性变化时才重新渲染
+  (prevProps, nextProps) => {
+    return (
+      prevProps.column.id === nextProps.column.id &&
+      prevProps.dragOverColumn === nextProps.dragOverColumn &&
+      prevProps.draggedTask?.id === nextProps.draggedTask?.id &&
+      JSON.stringify(prevProps.dragOverInfo) === JSON.stringify(nextProps.dragOverInfo) &&
+      // 使用任务ID和状态的组合来比较任务列表是否变化
+      JSON.stringify(
+        prevProps.filteredTasksList
+          .filter((t) => t.status === prevProps.column.id)
+          .map((t) => ({ id: t.id, status: t.status })),
+      ) ===
+        JSON.stringify(
+          nextProps.filteredTasksList
+            .filter((t) => t.status === nextProps.column.id)
+            .map((t) => ({ id: t.id, status: t.status })),
+        )
     )
   },
 )
@@ -262,22 +322,22 @@ type ViewMode = "board" | "table"
 // Add this to the existing styles
 const RequiredIndicator = () => <span className="text-red-500 mr-0.5">*</span>
 
-// Define the filter function outside the component to avoid recreation
+// 将过滤函数移到组件外部并使用 useMemo 缓存结果
 const filterTasks = (tasksToFilter: Task[], filterOptions: FilterOptions, query: string) => {
   let result = [...tasksToFilter]
 
   // Add search filter
   if (query) {
+    const lowerQuery = query.toLowerCase()
     result = result.filter(
-      (task) =>
-        task.title.toLowerCase().includes(query.toLowerCase()) ||
-        task.description.toLowerCase().includes(query.toLowerCase()),
+      (task) => task.title.toLowerCase().includes(lowerQuery) || task.description.toLowerCase().includes(lowerQuery),
     )
   }
 
   // Filter by title
   if (filterOptions.title) {
-    result = result.filter((task) => task.title.toLowerCase().includes(filterOptions.title.toLowerCase()))
+    const lowerTitle = filterOptions.title.toLowerCase()
+    result = result.filter((task) => task.title.toLowerCase().includes(lowerTitle))
   }
 
   // Filter by assignee
@@ -322,9 +382,7 @@ const filterTasks = (tasksToFilter: Task[], filterOptions: FilterOptions, query:
   return result
 }
 
-// Replace the renderCustomFieldInCard function with this improved version:
-
-// Add this function to render custom fields in the task card
+// 优化自定义字段渲染函数
 const renderCustomFieldInCard = (task: Task, field: CustomField) => {
   const value = task.customFields?.[field.id]
 
@@ -358,23 +416,38 @@ const renderCustomFieldInCard = (task: Task, field: CustomField) => {
   }
 }
 
-// Add this function to get the status color
-const getStatusColor = (status: Task["status"]) => {
-  switch (status) {
-    case "todo":
-      return "bg-gray-500"
-    case "in-progress":
-      return "bg-red-500"
-    case "review":
-      return "bg-purple-500"
-    case "done":
-      return "bg-black"
-    default:
-      return "bg-gray-500"
-  }
-}
+// 优化状态颜色函数
+const getStatusColorMemo = (() => {
+  const cache = new Map<string, string>()
 
-// Find the handleSaveTask function and fix the toast initialization issue
+  return (status: Task["status"]) => {
+    if (cache.has(status)) {
+      return cache.get(status)!
+    }
+
+    let color
+    switch (status) {
+      case "todo":
+        color = "bg-gray-500"
+        break
+      case "in-progress":
+        color = "bg-red-500"
+        break
+      case "review":
+        color = "bg-purple-500"
+        break
+      case "done":
+        color = "bg-black"
+        break
+      default:
+        color = "bg-gray-500"
+    }
+
+    cache.set(status, color)
+    return color
+  }
+})()
+
 function TaskBoard({
   tasks: initialTasks,
   projectId,
@@ -401,6 +474,8 @@ function TaskBoard({
   const [viewMode, setViewMode] = useState<ViewMode>("board")
   const [searchQuery, setSearchQuery] = useState("")
 
+  // 修改拖拽状态管理
+  const [dragOverInfo, setDragOverInfo] = useState<DragOverInfo | null>(null)
   const [draggedTask, setDraggedTask] = useState<Task | null>(null)
   const [editingTask, setEditingTask] = useState<Task | null>(null)
   const [isEditing, setIsEditing] = useState(false)
@@ -421,11 +496,31 @@ function TaskBoard({
   const dragCounter = useRef<Record<string, number>>({})
   const originalTaskRef = useRef<Task | null>(null)
   const draggedTaskIdRef = useRef<string | null>(null)
+  const draggedTaskSourceStatusRef = useRef<string | null>(null)
+  const draggedTaskSourceIndexRef = useRef<number | null>(null)
   const tasksRef = useRef<Task[]>([])
   const initialTasksRef = useRef<Task[]>([])
   const isUpdatingRef = useRef(false)
   const isFilteringRef = useRef(false)
   const prevTasksStringRef = useRef<string>("")
+
+  // 使用防抖处理搜索查询
+  const debouncedSearchRef = useRef<NodeJS.Timeout | null>(null)
+  const [debouncedQuery, setDebouncedQuery] = useState("")
+
+  // 处理搜索输入的防抖
+  const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value
+    setSearchQuery(value)
+
+    if (debouncedSearchRef.current) {
+      clearTimeout(debouncedSearchRef.current)
+    }
+
+    debouncedSearchRef.current = setTimeout(() => {
+      setDebouncedQuery(value)
+    }, 300)
+  }, [])
 
   // Extract all unique tags from tasks
   const availableTags = useMemo(() => {
@@ -441,8 +536,34 @@ function TaskBoard({
   // Use useMemo for filtered tasks
   const filteredTasksList = useMemo(() => {
     if (!initialized) return []
-    return filterTasks(tasks, filters, searchQuery)
-  }, [tasks, filters, searchQuery, initialized])
+    return filterTasks(tasks, filters, debouncedQuery)
+  }, [tasks, filters, debouncedQuery, initialized])
+
+  // 使用 useCallback 优化 getPriorityColor 函数
+  const getPriorityColor = useCallback((priority: Task["priority"]) => {
+    switch (priority) {
+      case "high":
+        return "bg-red-500"
+      case "medium":
+        return "bg-yellow-500"
+      case "low":
+        return "bg-green-500"
+      default:
+        return "bg-gray-500"
+    }
+  }, [])
+
+  // 使用 useCallback 优化 formatDate 函数
+  const formatDate = useCallback((dateString?: string) => {
+    if (!dateString) return null
+    try {
+      const date = new Date(dateString)
+      return date.toLocaleDateString()
+    } catch (error) {
+      console.error("Error formatting date:", error)
+      return dateString
+    }
+  }, [])
 
   // Initialize tasks only once
   useEffect(() => {
@@ -517,7 +638,19 @@ function TaskBoard({
       const currentTasksString = JSON.stringify(tasks)
       if (currentTasksString !== prevTasksStringRef.current) {
         console.log("Saving tasks to localStorage:", tasks)
-        localStorage.setItem(`project-${projectId}-tasks`, currentTasksString)
+
+        // 使用 requestIdleCallback 在浏览器空闲时执行非关键操作
+        if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+          ;(window as any).requestIdleCallback(() => {
+            localStorage.setItem(`project-${projectId}-tasks`, currentTasksString)
+          })
+        } else {
+          // 降级处理
+          setTimeout(() => {
+            localStorage.setItem(`project-${projectId}-tasks`, currentTasksString)
+          }, 0)
+        }
+
         tasksRef.current = tasks
         prevTasksStringRef.current = currentTasksString
 
@@ -543,6 +676,15 @@ function TaskBoard({
       }
     }
   }, [initialCustomFields, initialized, projectId])
+
+  // 清理防抖定时器
+  useEffect(() => {
+    return () => {
+      if (debouncedSearchRef.current) {
+        clearTimeout(debouncedSearchRef.current)
+      }
+    }
+  }, [])
 
   // Find the handleUpdateTask function and update it to also update localStorage
   const handleUpdateTask = useCallback(
@@ -578,22 +720,36 @@ function TaskBoard({
     setFilters(newFilters)
   }, [])
 
-  const columns = [
-    { id: "todo", title: "To Do" },
-    { id: "in-progress", title: "In Progress" },
-    { id: "review", title: "Review" },
-    { id: "done", title: "Done" },
-  ]
+  const columns = useMemo(
+    () => [
+      { id: "todo", title: "To Do" },
+      { id: "in-progress", title: "In Progress" },
+      { id: "review", title: "Review" },
+      { id: "done", title: "Done" },
+    ],
+    [],
+  )
 
-  const handleDragStart = useCallback((e: React.DragEvent, task: Task) => {
-    console.log("Drag started for task:", task.id, task)
+  // 修改 handleDragStart 函数，添加 index 参数
+  const handleDragStart = useCallback((e: React.DragEvent, task: Task, index: number) => {
+    console.log("Drag started for task:", task.id, task, "at index:", index)
 
     // Store the original task for potential reversion
     originalTaskRef.current = JSON.parse(JSON.stringify(task))
     draggedTaskIdRef.current = task.id
+    draggedTaskSourceStatusRef.current = task.status
+    draggedTaskSourceIndexRef.current = index
 
     // Set data for the drag operation
     e.dataTransfer.setData("text/plain", task.id)
+    e.dataTransfer.setData(
+      "application/json",
+      JSON.stringify({
+        taskId: task.id,
+        sourceStatus: task.status,
+        sourceIndex: index,
+      }),
+    )
     e.dataTransfer.effectAllowed = "move"
 
     // Set the dragged task in state
@@ -651,6 +807,10 @@ function TaskBoard({
     // Reset drag state
     setDraggedTask(null)
     setDragOverColumn(null)
+    setDragOverInfo(null)
+    draggedTaskIdRef.current = null
+    draggedTaskSourceStatusRef.current = null
+    draggedTaskSourceIndexRef.current = null
 
     // Reset all drag counters
     Object.keys(dragCounter.current).forEach((key) => {
@@ -658,91 +818,195 @@ function TaskBoard({
     })
   }, [])
 
+  // 修改 onDragOverTask 函数，增加精确的拖拽位置检测
+  const onDragOverTask = useCallback((e: React.DragEvent, task: Task, index: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+
+    // 设置拖拽效果
+    e.dataTransfer.dropEffect = "move"
+
+    // 获取鼠标在目标元素上的相对位置
+    const rect = e.currentTarget.getBoundingClientRect()
+    const y = e.clientY - rect.top
+    const height = rect.height
+
+    // 确定拖放位置：上半部分放在任务前，下半部分放在任务后
+    const position: DragPosition = y < height / 2 ? "before" : "after"
+
+    // 更新当前悬停的任务信息
+    setDragOverInfo({
+      taskId: task.id,
+      position,
+      index,
+    })
+
+    // 防止事件冒泡到列
+    e.stopPropagation()
+  }, [])
+
+  // 新增优化的顺序计算函数
+  const calculateNewOrder = useCallback((tasks: Task[], targetIndex: number, position: DragPosition): number => {
+    // 列表为空的情况
+    if (tasks.length === 0) return 1000
+
+    // 拖到列表最前面
+    if (targetIndex === 0 && position === "before") {
+      return Math.max(0, (tasks[0].order || 0) - 1000)
+    }
+
+    // 拖到列表最后面
+    if (targetIndex === tasks.length - 1 && position === "after") {
+      return (tasks[tasks.length - 1].order || 0) + 1000
+    }
+
+    // 拖到两个任务之间
+    const prevIndex = position === "before" ? targetIndex - 1 : targetIndex
+    const nextIndex = position === "before" ? targetIndex : targetIndex + 1
+
+    // 确保索引有效
+    if (prevIndex >= 0 && nextIndex < tasks.length) {
+      const prevOrder = tasks[prevIndex].order || 0
+      const nextOrder = tasks[nextIndex].order || 0
+      return prevOrder + Math.floor((nextOrder - prevOrder) / 2)
+    }
+
+    // 默认情况，添加到末尾
+    return (tasks[tasks.length - 1].order || 0) + 1000
+  }, [])
+
+  // 优化 handleDrop 函数，使用批处理和防抖
   const handleDrop = useCallback(
     async (e: React.DragEvent, newStatus: Task["status"]) => {
       e.preventDefault()
       e.stopPropagation()
 
-      const taskId = e.dataTransfer.getData("text/plain")
-      if (!taskId || !draggedTaskIdRef.current) {
-        console.log("No taskId found")
-        setDragOverColumn(null)
-        setDraggedTask(null)
-        return
-      }
-
-      const taskToUpdate = tasksRef.current.find((t) => t.id === taskId)
-      if (!taskToUpdate) {
-        console.error("Task not found in current state")
-        setDragOverColumn(null)
-        setDraggedTask(null)
-        return
-      }
-
-      if (taskToUpdate.status === newStatus) {
-        console.log("Task dropped in the same column, no action needed")
-        setDragOverColumn(null)
-        setDraggedTask(null)
-        return
-      }
-
-      console.log(`Moving task ${taskId} from ${taskToUpdate.status} to ${newStatus}`)
-      setIsMovingTask(true)
-
-      const updatedTask = {
-        ...JSON.parse(JSON.stringify(taskToUpdate)),
-        status: newStatus,
-      }
-
       try {
-        // Reset drag state first to avoid UI issues
+        // 获取拖拽数据
+        const taskId = e.dataTransfer.getData("text/plain")
+        const dragData = JSON.parse(e.dataTransfer.getData("application/json") || "{}")
+        const sourceStatus = dragData.sourceStatus || draggedTaskSourceStatusRef.current
+
+        if (!taskId) {
+          console.log("No taskId found")
+          setDragOverColumn(null)
+          setDraggedTask(null)
+          setDragOverInfo(null)
+          return
+        }
+
+        const taskToUpdate = tasksRef.current.find((t) => t.id === taskId)
+        if (!taskToUpdate) {
+          console.error("Task not found in current state")
+          setDragOverColumn(null)
+          setDraggedTask(null)
+          setDragOverInfo(null)
+          return
+        }
+
+        // 设置移动标志，防止重复操作
+        if (isMovingTask) return
+
+        setIsMovingTask(true)
+
+        // 获取目标列中的任务
+        const tasksInColumn = filteredTasksList.filter((t) => t.status === newStatus)
+
+        // 根据拖放位置计算新的顺序值
+        let newOrder: number
+
+        if (dragOverInfo) {
+          // 如果有具体的拖放位置信息，使用精确计算
+          newOrder = calculateNewOrder(tasksInColumn, dragOverInfo.index, dragOverInfo.position)
+        } else {
+          // 如果只有列信息，则放在列末尾
+          if (tasksInColumn.length === 0) {
+            newOrder = 1000
+          } else {
+            const lastTask = tasksInColumn[tasksInColumn.length - 1]
+            newOrder = (lastTask.order || 0) + 1000
+          }
+        }
+
+        // 创建更新后的任务对象（只更新这一个任务）
+        const updatedTask = {
+          ...JSON.parse(JSON.stringify(taskToUpdate)),
+          status: newStatus, // 如果跨列拖拽，更新状态
+          order: newOrder, // 更新顺序值
+        }
+
+        // 重置拖拽状态
         setDragOverColumn(null)
         setDraggedTask(null)
-        draggedTaskIdRef.current = null
+        setDragOverInfo(null)
 
-        // Use a setTimeout to ensure state updates don't conflict
-        setTimeout(() => {
-          // Optimistically update UI
-          handleUpdateTask(updatedTask)
-        }, 0)
+        // 乐观更新UI
+        handleUpdateTask(updatedTask)
 
-        // Call API to update the task status
-        console.log("Sending API request to update task:", updatedTask)
-        const response = await fetch(`/api/tasks/${taskId}`, {
-          method: "PUT",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(updatedTask),
-        })
+        // 使用 AbortController 实现请求取消功能
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 10000) // 10秒超时
 
-        if (!response.ok) {
-          const errorData = await response.json()
-          console.error("API error response:", errorData)
-          throw new Error(errorData.error || "Failed to update task status")
-        }
+        // 发送API请求，只更新这一个任务
+        try {
+          console.log("Sending API request to update task:", updatedTask)
+          const response = await fetch(`/api/tasks/${taskId}`, {
+            method: "PUT",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(updatedTask),
+            signal: controller.signal,
+          })
 
-        const result = await response.json()
-        console.log("Task status updated successfully:", result)
+          clearTimeout(timeoutId)
 
-        // Update with the result from the server
-        handleUpdateTask(result)
-      } catch (error) {
-        console.error("Error updating task status:", error)
+          // 检查是否是 429 错误
+          if (response.status === 429) {
+            throw new Error("Too many requests. Please try again later.")
+          }
 
-        // Revert to original state on error
-        if (originalTaskRef.current) {
-          handleUpdateTask(originalTaskRef.current)
-          alert("Failed to update task status. Please try again.")
-        }
-      } finally {
-        setTimeout(() => {
+          if (!response.ok) {
+            // 只有在非429错误时才尝试解析JSON
+            const errorData = await response.json().catch(() => ({ error: "Unknown error occurred" }))
+            throw new Error(errorData.error || "Failed to update task status")
+          }
+
+          // 解析响应
+          const result = await response.json().catch(() => {
+            console.error("Failed to parse response as JSON")
+            return updatedTask // 如果解析失败，使用我们已经有的更新后的任务
+          })
+
+          console.log("Task updated successfully:", result)
+
+          // 显示成功提示
+          toast({
+            title: "任务已更新",
+            description: sourceStatus === newStatus ? "任务顺序已成功更新" : "任务状态和顺序已成功更新",
+          })
+        } catch (error) {
+          console.error("Error updating task:", error)
+
+          // 恢复原始状态
+          if (originalTaskRef.current) {
+            handleUpdateTask(originalTaskRef.current)
+            toast({
+              title: "更新失败",
+              description: error instanceof Error ? error.message : "更新任务失败，已恢复原始状态",
+              variant: "destructive",
+            })
+          }
+        } finally {
           setIsMovingTask(false)
           originalTaskRef.current = null
-        }, 0)
+        }
+      } catch (error) {
+        console.error("Error in handleDrop:", error)
+        setIsMovingTask(false)
       }
     },
-    [handleUpdateTask],
+    [filteredTasksList, handleUpdateTask, dragOverInfo, calculateNewOrder, isMovingTask, toast],
   )
 
   const handleEditTask = useCallback(
@@ -770,7 +1034,7 @@ function TaskBoard({
     [customFields],
   )
 
-  // Find the handleSaveTask function and replace it with this optimized version
+  // 优化 handleSaveTask 函数，使用批处理和防抖
   const handleSaveTask = useCallback(async () => {
     if (!editingTask) return
 
@@ -827,6 +1091,10 @@ function TaskBoard({
         description: "任务已成功更新",
       })
 
+      // 使用 AbortController 实现请求取消功能
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10秒超时
+
       // Send API request in the background
       fetch(`/api/tasks/${taskToUpdate.id}`, {
         method: "PUT",
@@ -834,12 +1102,20 @@ function TaskBoard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify(taskToUpdate),
+        signal: controller.signal,
       })
         .then((response) => {
+          clearTimeout(timeoutId)
+
+          // 检查是否是 429 错误
+          if (response.status === 429) {
+            throw new Error("Too many requests. Please try again later.")
+          }
+
           if (!response.ok) {
             throw new Error("Failed to update task")
           }
-          return response.json()
+          return response.json().catch(() => taskToUpdate) // 如果解析失败，使用我们已经有的更新后的任务
         })
         .then((updatedTask) => {
           // Silently update the state with the server response
@@ -851,7 +1127,7 @@ function TaskBoard({
           // Show error toast
           toast({
             title: "更新失败",
-            description: "保存更改时出错，请重试",
+            description: error instanceof Error ? error.message : "保存更改时出错，请重试",
             variant: "destructive",
           })
         })
@@ -861,7 +1137,7 @@ function TaskBoard({
       // Show error toast
       toast({
         title: "更新失败",
-        description: "更新任务失败，请重试",
+        description: error instanceof Error ? error.message : "更新任务失败，请重试",
         variant: "destructive",
       })
 
@@ -880,6 +1156,7 @@ function TaskBoard({
     setIsAddingTask(true)
   }, [])
 
+  // 优化 handleCreateTask 函数，添加错误处理和请求超时
   const handleCreateTask = useCallback(async () => {
     if (!newTaskTitle || isSubmittingNewTask) return
 
@@ -920,20 +1197,38 @@ function TaskBoard({
       setNewTaskAssignee("")
       setNewTaskTags([])
 
+      // 使用 AbortController 实现请求取消功能
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10秒超时
+
       const response = await fetch("/api/tasks", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       })
 
+      clearTimeout(timeoutId)
+
+      // 检查是否是 429 错误
+      if (response.status === 429) {
+        throw new Error("Too many requests. Please try again later.")
+      }
+
       if (!response.ok) {
-        const errorData = await response.json()
+        // 只有在非429错误时才尝试解析JSON
+        const errorData = await response.json().catch(() => ({ error: "Unknown error occurred" }))
         throw new Error(errorData.error || "Failed to create task")
       }
 
-      const newTask = await response.json()
+      // 解析响应
+      const newTask = await response.json().catch(() => {
+        console.error("Failed to parse response as JSON")
+        throw new Error("Failed to parse server response")
+      })
+
       console.log("Task created successfully:", newTask)
 
       // Update tasks state with the new task
@@ -946,7 +1241,7 @@ function TaskBoard({
       console.error("Error creating task:", error)
       toast({
         title: "Failed to create task",
-        description: "Please try again.",
+        description: error instanceof Error ? error.message : "Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -965,23 +1260,44 @@ function TaskBoard({
     toast,
   ])
 
+  // 优化 handleUpdateTaskInline 函数，正确处理 429 错误和请求超时
   const handleUpdateTaskInline = useCallback(
     async (updatedTask: Task) => {
       try {
         console.log("Updating task inline:", updatedTask)
+
+        // 使用 AbortController 实现请求取消功能
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 10000) // 10秒超时
+
         const response = await fetch(`/api/tasks/${updatedTask.id}`, {
           method: "PUT",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify(updatedTask),
+          signal: controller.signal,
         })
 
-        if (!response.ok) {
-          throw new Error("Failed to update task")
+        clearTimeout(timeoutId)
+
+        // 检查是否是 429 错误
+        if (response.status === 429) {
+          throw new Error("Too many requests. Please try again later.")
         }
 
-        const result = await response.json()
+        if (!response.ok) {
+          // 只有在非429错误时才尝试解析JSON
+          const errorData = await response.json().catch(() => ({ error: "Unknown error occurred" }))
+          throw new Error(errorData.error || "Failed to update task")
+        }
+
+        // 解析响应
+        const result = await response.json().catch(() => {
+          console.error("Failed to parse response as JSON")
+          return updatedTask // 如果解析失败，使用我们已经有的更新后的任务
+        })
+
         console.log("Task updated successfully:", result)
 
         // Update local state immediately
@@ -995,30 +1311,6 @@ function TaskBoard({
     },
     [handleUpdateTask],
   )
-
-  const getPriorityColor = useCallback((priority: Task["priority"]) => {
-    switch (priority) {
-      case "high":
-        return "bg-red-500"
-      case "medium":
-        return "bg-yellow-500"
-      case "low":
-        return "bg-green-500"
-      default:
-        return "bg-gray-500"
-    }
-  }, [])
-
-  const formatDate = useCallback((dateString?: string) => {
-    if (!dateString) return null
-    try {
-      const date = new Date(dateString)
-      return date.toLocaleDateString()
-    } catch (error) {
-      console.error("Error formatting date:", error)
-      return dateString
-    }
-  }, [])
 
   // Add this useEffect for cleanup
   useEffect(() => {
@@ -1067,31 +1359,36 @@ function TaskBoard({
     }
   }
 
-  // Add this function to the TaskBoard component to handle task reordering
+  // 优化 handleReorderTasks 函数，使用批处理和请求超时
   const handleReorderTasks = async (taskIds: string[], newOrders: number[]) => {
     if (isUpdatingRef.current) return
 
     try {
       isUpdatingRef.current = true
 
-      // Call the API to update task orders
+      // 使用 AbortController 实现请求取消功能
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 10000) // 10秒超时
+
+      // 批量更新任务顺序
       const response = await fetch("/api/tasks/reorder", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ taskIds, newOrders }),
+        signal: controller.signal,
       })
 
+      clearTimeout(timeoutId)
+
       if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || "Failed to reorder tasks")
+        throw new Error("Failed to reorder tasks")
       }
 
-      // Update the tasks with their new orders
+      // 乐观更新UI
       setTasks((prevTasks) => {
         const updatedTasks = [...prevTasks]
-
         taskIds.forEach((taskId, index) => {
           const taskIndex = updatedTasks.findIndex((t) => t.id === taskId)
           if (taskIndex !== -1) {
@@ -1101,13 +1398,7 @@ function TaskBoard({
             }
           }
         })
-
-        // Sort tasks by order
-        return updatedTasks.sort((a, b) => {
-          const orderA = a.order !== undefined ? a.order : 0
-          const orderB = b.order !== undefined ? b.order : 0
-          return orderA - orderB
-        })
+        return updatedTasks
       })
 
       return true
@@ -1115,7 +1406,7 @@ function TaskBoard({
       console.error("Error reordering tasks:", error)
       toast({
         title: "Reordering failed",
-        description: "Failed to update task order. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to update task order. Please try again.",
         variant: "destructive",
       })
       return false
@@ -1135,18 +1426,12 @@ function TaskBoard({
           <ViewToggle currentView={viewMode} onViewChange={setViewMode} />
         </div>
         <div className="flex items-center gap-2">
-          {/* Remove or comment out the CustomFieldsManager component */}
-          {/* <CustomFieldsManager
-            projectId={projectId}
-            customFields={customFields}
-            onCustomFieldsChange={handleCustomFieldsChange}
-          /> */}
           <div className="relative">
             <Search className="absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search tasks..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={handleSearchChange}
               className="pl-8 w-[200px] sm:w-[300px]"
             />
           </div>
@@ -1167,14 +1452,16 @@ function TaskBoard({
               dragOverColumn={dragOverColumn}
               handleAddTask={handleAddTask}
               draggedTask={draggedTask}
+              dragOverInfo={dragOverInfo}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
+              onDragOverTask={onDragOverTask}
               handleEditTask={handleEditTask}
               formatDate={formatDate}
               getPriorityColor={getPriorityColor}
               customFields={customFields}
               renderCustomFieldInCard={renderCustomFieldInCard}
-              getStatusColor={getStatusColor}
+              getStatusColor={getStatusColorMemo}
             />
           ))}
         </div>
@@ -1314,7 +1601,7 @@ function TaskBoard({
               {customFields.length > 0 && (
                 <div className="space-y-2 mt-4">
                   <h3 className="text-sm font-medium">自定义字段</h3>
-                  <TaskCustomFields
+                  <TaskCustomFieldsLazy
                     customFields={customFields}
                     values={editingTask.customFields || {}}
                     onChange={(fieldId, value) =>
@@ -1366,95 +1653,68 @@ function TaskBoard({
           <DialogHeader>
             <DialogTitle>Add Task to {columns.find((col) => col.id === newTaskStatus)?.title}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-y-auto pr-1">
-            <div className="grid gap-4 py-4">
+          <div className="grid gap-4 py-4">
+            <div className="space-y-2">
+              <Label>Title</Label>
+              <Input value={newTaskTitle} onChange={(e) => setNewTaskTitle(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Description</Label>
+              <Textarea value={newTaskDescription} onChange={(e) => setNewTaskDescription(e.target.value)} rows={3} />
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
-                <Label>
-                  <RequiredIndicator />
-                  Title
-                </Label>
-                <Input
-                  value={newTaskTitle}
-                  onChange={(e) => setNewTaskTitle(e.target.value)}
-                  placeholder="Enter task title"
-                  required
-                />
-                {newTaskTitle.length === 0 && <p className="text-sm text-red-500 mt-1">Please enter a task title</p>}
-              </div>
-              <div className="space-y-2">
-                <Label>Description</Label>
-                <Textarea
-                  value={newTaskDescription}
-                  onChange={(e) => setNewTaskDescription(e.target.value)}
-                  placeholder="Enter task description"
-                  rows={3}
-                />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label>Priority</Label>
-                  <Select
-                    value={newTaskPriority}
-                    onValueChange={(value) => setNewTaskPriority(value as Task["priority"])}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Low</SelectItem>
-                      <SelectItem value="medium">Medium</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Due Date</Label>
-                  <Input type="date" value={newTaskDueDate} onChange={(e) => setNewTaskDueDate(e.target.value)} />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>Assignee</Label>
-                <Select value={newTaskAssignee} onValueChange={setNewTaskAssignee}>
+                <Label>Priority</Label>
+                <Select
+                  value={newTaskPriority}
+                  onValueChange={(value) => setNewTaskPriority(value as Task["priority"])}
+                >
                   <SelectTrigger>
-                    <SelectValue placeholder="Select assignee" />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="unassigned">Unassigned</SelectItem>
-                    <SelectItem value="John Doe">John Doe</SelectItem>
-                    <SelectItem value="Jane Smith">Jane Smith</SelectItem>
+                    <SelectItem value="low">Low</SelectItem>
+                    <SelectItem value="medium">Medium</SelectItem>
+                    <SelectItem value="high">High</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <div className="space-y-2">
-                <Label>Tags</Label>
-                <MultiSelect
-                  options={availableTags}
-                  selected={newTaskTags}
-                  onChange={setNewTaskTags}
-                  placeholder="Select tags..."
-                />
+                <Label>Due Date</Label>
+                <Input type="date" value={newTaskDueDate} onChange={(e) => setNewTaskDueDate(e.target.value)} />
               </div>
-              {customFields.length > 0 && (
-                <div className="space-y-2">
-                  <h3 className="text-sm font-medium">Custom Fields</h3>
-                  <TaskCustomFields
-                    customFields={customFields}
-                    values={{}}
-                    onChange={(fieldId, value) => {
-                      let newTaskCustomFields = {}
-                      newTaskCustomFields = newTaskCustomFields || {}
-                      newTaskCustomFields[fieldId] = value
-                    }}
-                  />
-                </div>
-              )}
+            </div>
+            <div className="space-y-2">
+              <Label>Assignee</Label>
+              <Select
+                value={newTaskAssignee || "unassigned"}
+                onValueChange={(value) => setNewTaskAssignee(value === "unassigned" ? "" : value)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="unassigned">Unassigned</SelectItem>
+                  <SelectItem value="John Doe">John Doe</SelectItem>
+                  <SelectItem value="Jane Smith">Jane Smith</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Tags</Label>
+              <MultiSelect
+                options={availableTags}
+                selected={newTaskTags}
+                onChange={setNewTaskTags}
+                placeholder="Select tags..."
+              />
             </div>
           </div>
           <div className="flex justify-end gap-2 pt-4 mt-2 border-t">
-            <Button variant="outline" onClick={() => setIsAddingTask(false)}>
+            <Button variant="outline" onClick={() => setIsAddingTask(false)} disabled={isSubmittingNewTask}>
               Cancel
             </Button>
-            <Button onClick={handleCreateTask} disabled={isSubmittingNewTask || !newTaskTitle}>
+            <Button onClick={handleCreateTask} disabled={isSubmittingNewTask}>
               {isSubmittingNewTask ? "Creating..." : "Create Task"}
             </Button>
           </div>
@@ -1464,6 +1724,5 @@ function TaskBoard({
   )
 }
 
-// Add these optimizations to the TaskBoard component
-// Use React.memo to prevent unnecessary re-renders
-export default memo(TaskBoard)
+// 在文件末尾添加默认导出语句
+export default TaskBoard

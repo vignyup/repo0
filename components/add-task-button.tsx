@@ -2,19 +2,13 @@
 
 import type React from "react"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { PlusIcon } from "lucide-react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
-import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { MultiSelect } from "./multi-select"
 import { toast } from "@/hooks/use-toast"
 import type { Task } from "@/lib/data"
-// Add the import for custom fields
-import { TaskCustomFields } from "./task-custom-fields"
 import type { CustomField, CustomFieldValue } from "@/lib/types"
 
 // Update the interface
@@ -42,8 +36,11 @@ export function AddTaskButton({ projectId, onTaskAdded, customFields = [] }: Add
   // Add state for validation errors
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({})
 
+  // 使用 useMemo 缓存自定义字段
+  const memoizedCustomFields = useMemo(() => customFields, [customFields]);
+
   // Update the resetForm function
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setTitle("")
     setDescription("")
     setStatus("todo")
@@ -53,27 +50,27 @@ export function AddTaskButton({ projectId, onTaskAdded, customFields = [] }: Add
     setTags([])
     setCustomFieldValues({})
     setValidationErrors({})
-  }
+  }, []);
 
   // Add this function
-  const handleCustomFieldChange = (fieldId: string, value: CustomFieldValue) => {
+  const handleCustomFieldChange = useCallback((fieldId: string, value: CustomFieldValue) => {
     setCustomFieldValues((prev) => ({
       ...prev,
       [fieldId]: value,
     }))
 
     // Clear validation error for this field if it exists
-    if (validationErrors[fieldId]) {
-      setValidationErrors((prev) => {
-        const newErrors = { ...prev }
-        delete newErrors[fieldId]
-        return newErrors
-      })
-    }
-  }
+    setValidationErrors((prev) => {
+      if (!prev[fieldId]) return prev;
+      
+      const newErrors = { ...prev };
+      delete newErrors[fieldId];
+      return newErrors;
+    });
+  }, []);
 
   // Add a function to validate the form
-  const validateForm = (): boolean => {
+  const validateForm = useCallback((): boolean => {
     const errors: Record<string, string> = {}
 
     // Validate title
@@ -99,10 +96,10 @@ export function AddTaskButton({ projectId, onTaskAdded, customFields = [] }: Add
 
     setValidationErrors(errors)
     return Object.keys(errors).length === 0
-  }
+  }, [title, customFields, customFieldValues]);
 
   // Update the handleSubmit function to include validation
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault()
 
     // Validate the form
@@ -180,7 +177,21 @@ export function AddTaskButton({ projectId, onTaskAdded, customFields = [] }: Add
     } finally {
       setIsSubmitting(false)
     }
-  }
+  }, [
+    validateForm, 
+    projectId, 
+    title, 
+    description, 
+    status, 
+    priority, 
+    dueDate, 
+    assignee, 
+    tags, 
+    customFieldValues, 
+    toast, 
+    resetForm, 
+    onTaskAdded
+  ]);
 
   // Fetch custom fields when the dialog opens
   useEffect(() => {
@@ -220,129 +231,4 @@ export function AddTaskButton({ projectId, onTaskAdded, customFields = [] }: Add
             <div className="flex-1 overflow-y-auto pr-1">
               <div className="space-y-4 mt-4">
                 <div className="space-y-2">
-                  <Label htmlFor="title" className="flex items-center">
-                    任务标题 <span className="text-red-500 ml-1">*</span>
-                  </Label>
-                  <Input
-                    id="title"
-                    value={title}
-                    onChange={(e) => {
-                      setTitle(e.target.value)
-                      if (validationErrors.title) {
-                        setValidationErrors((prev) => {
-                          const newErrors = { ...prev }
-                          delete newErrors.title
-                          return newErrors
-                        })
-                      }
-                    }}
-                    placeholder="输入任务标题"
-                    className={validationErrors.title ? "border-red-500" : ""}
-                  />
-                  {validationErrors.title && <p className="text-sm text-red-500">{validationErrors.title}</p>}
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="description">描述</Label>
-                  <Textarea
-                    id="description"
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="输入任务描述"
-                    rows={3}
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="status">状态</Label>
-                    <Select value={status} onValueChange={(value: any) => setStatus(value)}>
-                      <SelectTrigger id="status">
-                        <SelectValue placeholder="选择状态" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="todo">待办</SelectItem>
-                        <SelectItem value="in-progress">进行中</SelectItem>
-                        <SelectItem value="review">审核</SelectItem>
-                        <SelectItem value="done">已完成</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="priority">优先级</Label>
-                    <Select value={priority} onValueChange={(value: any) => setPriority(value)}>
-                      <SelectTrigger id="priority">
-                        <SelectValue placeholder="选择优先级" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">低</SelectItem>
-                        <SelectItem value="medium">中</SelectItem>
-                        <SelectItem value="high">高</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="assignee">负责人</Label>
-                    <Select value={assignee} onValueChange={setAssignee}>
-                      <SelectTrigger id="assignee">
-                        <SelectValue placeholder="选择负责人" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="unassigned">未分配</SelectItem>
-                        <SelectItem value="John Doe">John Doe</SelectItem>
-                        <SelectItem value="Jane Smith">Jane Smith</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="dueDate">截止日期</Label>
-                    <Input id="dueDate" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <Label htmlFor="tags">标签</Label>
-                  <MultiSelect selected={tags} onChange={setTags} placeholder="选择标签" />
-                </div>
-
-                {customFields.length > 0 && (
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-medium">自定义字段</h3>
-                    <TaskCustomFields
-                      customFields={customFields}
-                      values={customFieldValues}
-                      onChange={handleCustomFieldChange}
-                      errors={validationErrors}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-4 mt-2 border-t">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setIsOpen(false)
-                  resetForm()
-                }}
-                disabled={isSubmitting}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={isSubmitting}>
-                {isSubmitting ? "创建中..." : "创建任务"}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </>
-  )
-}
+                  <Label htmlFor="title" className="flex items\

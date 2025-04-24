@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useMemo } from "react"
+import { useState, useEffect, useMemo, useCallback } from "react"
 import TaskBoardWithErrorBoundary from "@/components/task-board-error-boundary"
 import { AddTaskButton } from "@/components/add-task-button"
 import type { Task } from "@/lib/data"
@@ -23,60 +23,65 @@ export function ProjectTaskManager({
   const [customFields, setCustomFields] = useState<CustomField[]>(initialCustomFields)
   const [isLoading, setIsLoading] = useState(true)
 
-  // Memoize tasks to prevent unnecessary re-renders
+  // 使用 useMemo 缓存任务数据，避免不必要的重新渲染
   const memoizedTasks = useMemo(() => initialTasks, [initialTasks])
 
-  // Load data with improved performance
+  // 优化数据加载性能
   useEffect(() => {
-    // Start with a loading state
-    setIsLoading(true)
-
-    // Use a small timeout to allow the UI to render first
-    const timer = setTimeout(() => {
-      // Always use initialCustomFields from props, don't try to load from localStorage
+    // 使用 requestIdleCallback 在浏览器空闲时加载数据
+    const loadData = () => {
+      // 使用 initialCustomFields 而不是从 localStorage 加载
       setCustomFields(initialCustomFields)
 
-      // Set tasks with a small delay to improve perceived performance
+      // 设置任务数据
       setTasks(memoizedTasks)
       setIsLoading(false)
-    }, 100)
+    }
 
-    return () => clearTimeout(timer)
+    if ("requestIdleCallback" in window) {
+      // 使用 requestIdleCallback 在浏览器空闲时执行
+      window.requestIdleCallback(() => loadData(), { timeout: 500 })
+    } else {
+      // 回退到 setTimeout
+      setTimeout(loadData, 100)
+    }
+
+    return () => {
+      // 清理函数
+    }
   }, [projectId, initialCustomFields, memoizedTasks])
 
-  // Update tasks when initialTasks changes
+  // 当 initialTasks 变化时更新任务
   useEffect(() => {
     setTasks(initialTasks)
   }, [initialTasks])
 
-  const handleTaskAdded = (newTask: Task) => {
-    console.log("New task added in ProjectTaskManager:", newTask)
-    // Update tasks state with the new task
-    setTasks((prevTasks) => {
-      const updatedTasks = [...prevTasks, newTask]
-      console.log("Updated tasks:", updatedTasks)
-      return updatedTasks
-    })
-  }
+  // 优化任务添加处理函数
+  const handleTaskAdded = useCallback((newTask: Task) => {
+    setTasks((prevTasks) => [...prevTasks, newTask])
+  }, [])
 
-  const handleCustomFieldsChange = (fields: CustomField[]) => {
-    console.log("Updating custom fields:", fields)
-    setCustomFields(fields)
+  // 优化自定义字段变更处理函数
+  const handleCustomFieldsChange = useCallback(
+    (fields: CustomField[]) => {
+      setCustomFields(fields)
 
-    // Save to localStorage for persistence
-    try {
-      localStorage.setItem(`project-${projectId}-custom-fields`, JSON.stringify(fields))
-    } catch (err) {
-      console.error("Error storing custom fields:", err)
-    }
+      // 保存到 localStorage 以提高持久性
+      try {
+        localStorage.setItem(`project-${projectId}-custom-fields`, JSON.stringify(fields))
+      } catch (err) {
+        console.error("Error storing custom fields:", err)
+      }
 
-    // Notify parent component
-    if (onCustomFieldsChange) {
-      onCustomFieldsChange(fields)
-    }
-  }
+      // 通知父组件
+      if (onCustomFieldsChange) {
+        onCustomFieldsChange(fields)
+      }
+    },
+    [projectId, onCustomFieldsChange],
+  )
 
-  // Show a loading skeleton while data is being prepared
+  // 显示加载骨架屏
   if (isLoading) {
     return (
       <div>
@@ -114,15 +119,17 @@ export function ProjectTaskManager({
     <div>
       <div className="flex items-center justify-between mb-8">
         <h2 className="text-lg font-medium">Task Board</h2>
-        <AddTaskButton projectId={projectId} onTaskAdded={handleTaskAdded} />
+        <AddTaskButton projectId={projectId} onTaskAdded={handleTaskAdded} customFields={customFields} />
       </div>
       <TaskBoardWithErrorBoundary
         tasks={tasks}
         projectId={projectId}
-        onTasksChange={(updatedTasks) => setTasks(updatedTasks)}
+        onTasksChange={setTasks}
         customFields={customFields}
         onCustomFieldsChange={handleCustomFieldsChange}
       />
     </div>
   )
 }
+
+export default ProjectTaskManager
