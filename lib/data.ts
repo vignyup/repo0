@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation"
-import { createServerSupabaseClient } from "./supabase"
+import { createServerSupabaseClient } from "./supabase-server"
 import { cache } from "react"
 
 export type Project = {
