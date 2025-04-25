@@ -123,7 +123,7 @@ function clearExpiredCache(): void {
 
 // 定期清理过期缓存
 if (typeof window !== "undefined") {
-  setInterval(clearExpiredCache, 60000) // 每分钟清理一次
+  const cleanupInterval = setInterval(clearExpiredCache, 60000) // 每分钟清理一次
 }
 
 // 重新添加 getProjects 函数
