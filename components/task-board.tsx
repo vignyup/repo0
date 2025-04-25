@@ -448,6 +448,14 @@ const getStatusColorMemo = (() => {
   }
 })()
 
+// 定义清理过期缓存的函数
+const clearExpiredCache = () => {
+  // 实现清理过期缓存的逻辑
+  // 例如，可以检查 localStorage 中是否有过期的数据并删除
+  // 这里只是一个示例，实际实现需要根据具体的缓存策略来编写
+  console.log("清理过期缓存")
+}
+
 function TaskBoard({
   tasks: initialTasks,
   projectId,
@@ -1418,6 +1426,14 @@ function TaskBoard({
   if (!initialized) {
     return <div className="flex items-center justify-center h-64">Loading tasks...</div>
   }
+
+  // 定期清理过期缓存
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const cleanupInterval = setInterval(clearExpiredCache, 60000) // 每分钟清理一次
+      return () => clearInterval(cleanupInterval)
+    }
+  }, [])
 
   return (
     <>
